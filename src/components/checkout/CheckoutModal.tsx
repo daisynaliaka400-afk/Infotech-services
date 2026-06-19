@@ -83,6 +83,9 @@ export default function CheckoutModal({ bundle, onClose }: Props) {
       const orderRef = generateOrderRef();
       const normalizedPhone = normalizePhone(phone);
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // PHASE 1: CREATE ORDER IN DATABASE
+      // ═══════════════════════════════════════════════════════════════════════
       const { data, error } = await supabase.functions.invoke('create-order', {
         body: {
           bundle_id: bundle.id,
@@ -93,7 +96,9 @@ export default function CheckoutModal({ bundle, onClose }: Props) {
       });
 
       if (error || !data?.order) {
-        toast.error(data?.error || 'Failed to create order. Please try again.');
+        const errorMsg = data?.error || error?.message || 'Failed to create order. Please try again.';
+        console.error("Order Creation Error: ", { error, data });
+        toast.error(errorMsg);
         setLoading(false);
         return;
       }
@@ -103,18 +108,49 @@ export default function CheckoutModal({ bundle, onClose }: Props) {
       setOrderId(oid);
       setOrderNumber(onum);
 
-      // Build payment URL with reference params
-      const params = new URLSearchParams({
-        ref: orderRef,
-        amount: String(bundle.price),
-        phone: normalizedPhone,
-        description: bundle.name,
-      });
-      setPaymentUrl(`${PAYMENT_BASE_URL}?${params.toString()}`);
-      setStep('payment');
-      startPolling(oid);
-    } catch {
+      // ═══════════════════════════════════════════════════════════════════════
+      // PHASE 2: TRIGGER PAYMENT GATEWAY (GiftedPay STK Push)
+      // ═══════════════════════════════════════════════════════════════════════
+      try {
+        const stkResponse = await supabase.functions.invoke('giftedpay-stk', {
+          body: {
+            order_id: oid,
+          },
+          method: 'POST',
+        });
+
+        if (stkResponse.error || !stkResponse.data?.success) {
+          const stkErrorMsg = stkResponse.data?.error || stkResponse.error?.message || 'Failed to initiate payment';
+          console.error("STK Push Error: ", { error: stkResponse.error, data: stkResponse.data });
+          toast.error(stkErrorMsg);
+          setLoading(false);
+          setStep('failed');
+          return;
+        }
+
+        // If GiftedPay returns a checkout URL, use it; otherwise use fallback
+        const checkoutUrl = stkResponse.data?.checkout_url || `${PAYMENT_BASE_URL}?ref=${orderRef}&amount=${bundle.price}&phone=${normalizedPhone}&description=${bundle.name}`;
+        
+        console.log("Payment Gateway Response:", {
+          success: true,
+          checkout_url: checkoutUrl,
+          checkout_request_id: stkResponse.data?.checkout_request_id,
+        });
+
+        setPaymentUrl(checkoutUrl);
+        setStep('payment');
+        startPolling(oid);
+      } catch (stkError) {
+        console.error("Unexpected STK Push Error: ", stkError);
+        toast.error('Failed to initiate payment. Please try again.');
+        setLoading(false);
+        setStep('failed');
+        return;
+      }
+    } catch (err) {
+      console.error("Unexpected error in handlePay: ", err);
       toast.error('Unexpected error. Please try again.');
+      setLoading(false);
     } finally {
       setLoading(false);
     }
