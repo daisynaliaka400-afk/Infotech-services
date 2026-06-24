@@ -62,12 +62,11 @@ serve(async (req) => {
       phone_number: normalizedPhone,
       payment_status: 'pending',
     };
-    if (order_reference) insertPayload.order_reference = order_reference;
 
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .insert(insertPayload)
-      .select('id, order_number, order_reference, bundle_name, bundle_price, phone_number, payment_status, created_at')
+      .select('id, order_number, bundle_name, bundle_price, phone_number, payment_status, created_at')
       .single();
 
     if (orderError || !order) {
@@ -76,6 +75,15 @@ serve(async (req) => {
         JSON.stringify({ error: 'Failed to create order' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Best-effort: store the client-generated reference (requires order_reference column).
+    // Silently ignored if the column does not exist in the current schema.
+    if (order_reference) {
+      await supabase
+        .from('orders')
+        .update({ order_reference })
+        .eq('id', order.id);
     }
 
     await supabase.from('payment_logs').insert({
